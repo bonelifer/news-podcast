@@ -1,0 +1,15 @@
+# Makes one news-podcast episode. Installed by `news_podcast.py install`,
+# which replaces @SCRIPT@ with the script's full path.
+[Unit]
+Description=Daily news podcast (agy + Piper)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# agy and piper are installed in ~/.local/bin, which systemd does not
+# put on PATH by default.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@SCRIPT@ run
+TimeoutStartSec=2h
+Nice=10

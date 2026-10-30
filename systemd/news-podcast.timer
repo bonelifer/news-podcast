@@ -1,0 +1,11 @@
+# Runs news-podcast.service every day at 6:00 AM local time. Persistent
+# catches up once at the next boot if the computer was off at 6:00 AM.
+[Unit]
+Description=Daily news podcast at 6 AM
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

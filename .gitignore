@@ -1,0 +1,6 @@
+# Project virtual environment, created automatically by news_podcast.py.
+.venv/
+__pycache__/
+
+# Live config belongs in ~/.config/news-podcast/; never commit a copy.
+config.ini

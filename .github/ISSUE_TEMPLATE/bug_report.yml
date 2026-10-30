@@ -1,0 +1,29 @@
+name: Bug report
+description: Something in news-podcast isn't working.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you ran or expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log output
+      description: Output of `journalctl --user -u news-podcast.service -n 50` or of a manual `news_podcast.py run`.
+      render: text
+  - type: input
+    id: os
+    attributes:
+      label: Linux distribution and version
+      placeholder: Ubuntu 22.04
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: agy and Piper versions
+      placeholder: agy 1.4.11, piper-tts 1.2.0

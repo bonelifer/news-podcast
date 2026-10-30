@@ -1,0 +1,90 @@
+# news-podcast settings.
+#
+# `news_podcast.py install` copies this file to
+# ~/.config/news-podcast/config.ini the first time it runs and never
+# overwrites it afterwards. Edit that copy, not this template.
+# A leading ~ in paths means your home folder.
+
+[podcast]
+# Folder the episodes are saved in. Each day gets its own subfolder:
+# output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3, with the script as a .txt.
+output_dir = ~/Podcasts/news
+
+# Delete episodes older than this many days. 0 keeps every episode.
+keep_days = 30
+
+# Rough episode length in minutes. The script is written to about 150
+# spoken words per minute.
+target_minutes = 20
+
+# Only stories published within this many hours are used.
+lookback_hours = 24
+
+# Most stories taken from any one feed, newest first.
+max_items_per_feed = 15
+
+[piper]
+# Voice used for the opening and closing, and for any section that does
+# not name its own voice. Must be one of the [voice: Name] blocks below.
+default_voice = libritts
+
+# Reading speed for voices that do not set their own: 1.0 is normal,
+# higher is slower, lower is faster.
+length_scale = 1.0
+
+# Seconds of silence between sentences.
+sentence_silence = 0.3
+
+# Each [voice: Name] is a Piper voice that sections can use. model is the
+# .onnx file (its .onnx.json must sit next to it). speaker picks one
+# speaker in a voice that has several; leave it empty for the default.
+# length_scale sets this voice's own speed; leave it empty to use the
+# [piper] length_scale above.
+# All voices must use the same sample rate.
+[voice: libritts]
+model = ~/.local/share/piper/models/en_US-libritts-high/en_US-libritts-high.onnx
+speaker =
+length_scale = 0.8
+
+[voice: cori]
+model = ~/.local/share/piper/models/cori-high/cori-high.onnx
+speaker =
+length_scale = 0.9
+
+[voice: jenny]
+model = ~/.local/share/piper/models/jenny/jenny.onnx
+speaker =
+length_scale = 0.8
+
+[agy]
+# Antigravity CLI command used to write the spoken script.
+command = agy
+
+# Give up on agy after this many seconds and fall back to reading the
+# headlines straight through.
+timeout_seconds = 900
+
+# Each [section: Name] becomes one segment of the episode, in the order
+# listed here. voice names a [voice: Name] block; leave it out to use
+# default_voice. List one RSS or Atom feed URL per line under feeds; add
+# " | Name" after a URL to choose the outlet name that is read aloud
+# instead of the feed's own title.
+[section: Hot Springs and Arkansas]
+voice = libritts
+feeds =
+    https://www.hotsr.com/rss/headlines/ | The Sentinel-Record
+    https://news.google.com/rss/search?q=%22Hot+Springs%22+Arkansas+when:1d&hl=en-US&gl=US&ceid=US:en
+
+[section: US and world]
+voice = cori
+feeds =
+    https://feeds.npr.org/1001/rss.xml | NPR
+    https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml | BBC News
+    https://feeds.bbci.co.uk/news/world/rss.xml | BBC News
+
+[section: Technology]
+voice = jenny
+feeds =
+    https://feeds.arstechnica.com/arstechnica/index | Ars Technica
+    https://www.theverge.com/rss/index.xml | The Verge
+    https://hnrss.org/frontpage?points=150 | Hacker News
