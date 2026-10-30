@@ -88,3 +88,14 @@ feeds =
     https://feeds.arstechnica.com/arstechnica/index | Ars Technica
     https://www.theverge.com/rss/index.xml | The Verge
     https://hnrss.org/frontpage?points=150 | Hacker News
+
+# Words Piper says wrong, and a spelling that makes it say them right.
+# Whole words only, ignoring case; only the audio changes, the saved
+# script keeps the real spelling. Add one line per word: word = spelling
+[pronunciations]
+Saline = Say-lean
+
+# A [pronunciations: Voice] block overrides the list above for one voice,
+# for words that voice needs spelled differently.
+[pronunciations: jenny]
+Saline = Say-leen
