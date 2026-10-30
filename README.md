@@ -84,6 +84,9 @@ Everything lives in `~/.config/news-podcast/config.ini`; the comments in
   and a list of feed URLs (`URL | Spoken name` sets the outlet name read
   aloud)
 - `[agy]`: the `agy` command and its time limit
+- `[pronunciations]`: local names Piper says wrong and a spelling that fixes
+  them, such as `Saline = Say-lean` (only the audio changes); a
+  `[pronunciations: Voice]` block overrides it for one voice
 
 Every episode uses some of your Antigravity usage allowance: one `agy`
 request per section.

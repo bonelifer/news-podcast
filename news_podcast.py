@@ -114,6 +114,7 @@ class Voice:
     model: Path
     speaker: str
     length_scale: float | None  # None uses [piper] length_scale
+    pronunciations: dict[str, str] = field(default_factory=dict)  # overrides the shared list
 
 
 @dataclass
@@ -225,6 +226,16 @@ def load_config(path: Path) -> Config:
 
     if not voices:
         raise ConfigError("no [voice: Name] blocks found")
+    shared = read_pronunciations(parser, "pronunciations")
+    for voice in voices.values():
+        voice.pronunciations = dict(shared)
+    for name in parser.sections():
+        kind, _, label = name.partition(":")
+        if kind.strip() != "pronunciations" or not label.strip():
+            continue
+        if label.strip() not in voices:
+            raise ConfigError(f"[{name}] names an unknown voice; use one of {', '.join(voices)}")
+        voices[label.strip()].pronunciations.update(read_pronunciations(parser, name))
     if not sections:
         raise ConfigError("no [section: Name] blocks found")
     default_voice = parser.get("piper", "default_voice", fallback="").strip()
@@ -255,6 +266,13 @@ def load_config(path: Path) -> Config:
     )
 
 
+def read_pronunciations(parser: configparser.ConfigParser, section: str) -> dict[str, str]:
+    """Return a section's word = spelling pairs, or {} if the section is absent."""
+    if not parser.has_section(section):
+        return {}
+    return {word: spoken.strip() for word, spoken in parser.items(section) if spoken.strip()}
+
+
 def clean_text(raw: str) -> str:
     """Strip HTML tags and entities and collapse whitespace."""
     text = re.sub(r"<[^>]+>", " ", raw or "")
@@ -268,6 +286,17 @@ def ordinal(day: int) -> str:
         return f"{day}th"
     suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
     return f"{day}{suffix}"
+
+
+def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
+    """Swap listed words for their sound-it-out spellings before Piper reads them.
+
+    Matching is by whole word and ignores case; the saved script keeps the real
+    spelling because this is only applied to the text sent to Piper.
+    """
+    for word, spoken in pronunciations.items():
+        text = re.sub(rf"\b{re.escape(word)}\b", spoken, text, flags=re.IGNORECASE)
+    return text
 
 
 def spoken_list(items: list[str]) -> str:
@@ -504,7 +533,8 @@ def synthesize(segments: list[tuple[str, str]], config: Config, workdir: Path) -
         if voice.speaker:
             command += ["-s", voice.speaker]
         log.info("reading segment %d of %d with %s", index + 1, len(segments), voice_name)
-        result = subprocess.run(command, input=text, text=True, capture_output=True)
+        result = subprocess.run(command, input=apply_pronunciations(text, voice.pronunciations),
+                                text=True, capture_output=True)
         if result.returncode != 0 or not part.exists():
             detail = result.stderr.strip().splitlines()[-1:] or ["no output"]
             raise RuntimeError(f"piper failed with voice {voice_name}: {detail[0]}")
