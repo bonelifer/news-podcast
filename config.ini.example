@@ -60,8 +60,14 @@ length_scale = 0.8
 # Antigravity CLI command used to write the spoken script.
 command = agy
 
-# Give up on agy after this many seconds and fall back to reading the
-# headlines straight through.
+# Models tried in order for each section, separated by commas. If one
+# fails (for example its weekly allowance is used up), the next is tried
+# before falling back to reading the headlines. `agy models` lists the
+# names. Leave empty to use agy's own default model.
+models = claude-sonnet-4-6, gemini-3.8-flash-medium
+
+# Give up on one agy request after this many seconds; the next model in
+# models is then tried.
 timeout_seconds = 900
 
 # Each [section: Name] becomes one segment of the episode, in the order
