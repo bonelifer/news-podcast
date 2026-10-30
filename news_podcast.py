@@ -142,6 +142,7 @@ class Config:
     voices: dict[str, Voice]
     agy_command: str
     agy_timeout: int
+    agy_models: list[str]  # tried in order; empty uses agy's default model
     sections: list[Section] = field(default_factory=list)
 
 
@@ -262,6 +263,8 @@ def load_config(path: Path) -> Config:
         voices=voices,
         agy_command=parser.get("agy", "command", fallback="agy").strip() or "agy",
         agy_timeout=read_int(parser, "agy", "timeout_seconds", 900, 30),
+        agy_models=[m for m in re.split(r"[\s,]+", parser.get("agy", "models", fallback=""))
+                    if m],
         sections=sections,
     )
 
@@ -444,13 +447,35 @@ or "Turning now to".
 Stories:
 {story_list(stories)}
 """
+    errors = []
+    for model in config.agy_models or [""]:
+        try:
+            script = run_agy(prompt, model, config)
+        except RuntimeError as error:
+            log.warning("%s: agy%s failed: %s", section.name,
+                        f" model {model}" if model else "", error)
+            errors.append(str(error))
+            continue
+        log.info("%s: written by %s (%d words)", section.name, model or "agy's default model",
+                 len(script.split()))
+        return script
+    raise RuntimeError("; ".join(errors))
+
+
+def run_agy(prompt: str, model: str, config: Config) -> str:
+    """Run one agy print-mode request with ``model`` ("" for agy's default).
+
+    Returns the cleaned script; raises RuntimeError if agy fails, times out
+    or returns almost nothing.
+    """
     workdir = CACHE_DIR / "agy-workspace"
     workdir.mkdir(parents=True, exist_ok=True)
+    command = [config.agy_command, "-p", prompt, "--print-timeout", f"{config.agy_timeout}s"]
+    if model:
+        command += ["--model", model]
     try:
-        result = subprocess.run(
-            [config.agy_command, "-p", prompt, "--print-timeout", f"{config.agy_timeout}s"],
-            cwd=workdir, capture_output=True, text=True, timeout=config.agy_timeout + 60,
-        )
+        result = subprocess.run(command, cwd=workdir, capture_output=True, text=True,
+                                timeout=config.agy_timeout + 60)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise RuntimeError(f"agy did not finish: {error}") from None
     if result.returncode != 0:
