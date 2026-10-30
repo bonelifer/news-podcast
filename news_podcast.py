@@ -266,7 +266,8 @@ def ordinal(day: int) -> str:
     """Return a day of the month as it is said aloud: 1st, 2nd, 3rd, 30th."""
     if 11 <= day % 100 <= 13:
         return f"{day}th"
-    return f"{day}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th') }"
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
 
 
 def spoken_list(items: list[str]) -> str:
