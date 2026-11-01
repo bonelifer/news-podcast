@@ -7,7 +7,8 @@
 
 [podcast]
 # Folder the episodes are saved in. Each day gets its own subfolder:
-# output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3, with the script as a .txt.
+# output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3, with the script as a .txt and
+# the stories it was written from as a .sources.txt.
 output_dir = ~/Podcasts/news
 
 # Delete episodes older than this many days. 0 keeps every episode.

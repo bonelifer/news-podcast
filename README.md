@@ -9,7 +9,8 @@ can use its own voice.
 The default setup covers Hot Springs and Arkansas, US and world news, and
 technology. It makes a briefing of about 20 minutes at 6:00 AM each day and
 saves it as `~/Podcasts/news/YYYY-MM-DD/news-YYYY-MM-DD.mp3`, with the script beside it
-as a `.txt` file.
+as a `.txt` file and a `.sources.txt` file listing every story `agy` was given (with
+links) and which model wrote each section, so any line can be traced to its feed item.
 
 ## How it works
 

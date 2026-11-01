@@ -53,7 +53,7 @@ FEED_TIMEOUT_SECONDS = 20
 FEED_ATTEMPTS = 3
 SUMMARY_MAX_CHARS = 600
 USER_AGENT = "news-podcast/1.0 (+https://github.com/bonelifer/news-podcast)"
-EPISODE_NAME = re.compile(r"^news-(\d{4}-\d{2}-\d{2})\.(mp3|txt)$")
+EPISODE_NAME = re.compile(r"^news-(\d{4}-\d{2}-\d{2})\.(mp3|txt|sources\.txt)$")
 DAY_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 EXIT_BUSY = 75
 
@@ -154,6 +154,7 @@ class Story:
     title: str
     summary: str
     published: dt.datetime | None
+    link: str
 
 
 class ConfigError(Exception):
@@ -383,7 +384,8 @@ def fetch_section(section: Section, config: Config, now: dt.datetime) -> tuple[l
             if normalize_title(summary).startswith(key):
                 summary = ""
             seen.add(key)
-            stories.append(Story(source, title, summary[:SUMMARY_MAX_CHARS], published))
+            stories.append(Story(source, title, summary[:SUMMARY_MAX_CHARS], published,
+                                 entry.get("link", "").strip()))
             taken += 1
             if taken >= config.max_items_per_feed:
                 break
@@ -406,8 +408,12 @@ def story_list(stories: list[Story]) -> str:
 
 
 def write_with_agy(section: Section, stories: list[Story], words: int,
-                   date_text: str, config: Config) -> str:
-    """Ask agy for a spoken script of the section; raise RuntimeError on failure."""
+                   date_text: str, config: Config) -> tuple[str, str]:
+    """Ask agy for a spoken script of the section.
+
+    Returns the script and the model that wrote it; raises RuntimeError if
+    every model fails.
+    """
     prompt = f"""You are writing the "{section.name}" segment of a spoken daily news \
 podcast for {date_text}. A text-to-speech voice will read your words aloud exactly as written.
 
@@ -421,6 +427,9 @@ must come from the stories below. Do not browse the web or use any tools.
 - You may add stable local background a nearby newsreader would know, such as team \
 nicknames, which county a town is in, or what an organization or landmark is. Never \
 use it for anything that changes often or that you are unsure of.
+- Never name a president, administration, prime minister, government or other \
+officeholder unless the story itself names them. Your knowledge of who holds office \
+may be out of date, so say "the US", "Washington" or "the government" instead.
 - Open with a brief, plain lead-in such as "Here in Hot Springs..." or "In technology \
 news...". Do not welcome the listener, name the segment formally, or repeat the date.
 - Lead with the most important stories and group related ones together. Skip \
@@ -456,9 +465,9 @@ Stories:
                         f" model {model}" if model else "", error)
             errors.append(str(error))
             continue
-        log.info("%s: written by %s (%d words)", section.name, model or "agy's default model",
-                 len(script.split()))
-        return script
+        model = model or "agy's default model"
+        log.info("%s: written by %s (%d words)", section.name, model, len(script.split()))
+        return script, model
     raise RuntimeError("; ".join(errors))
 
 
@@ -504,14 +513,38 @@ def headline_script(section: Section, stories: list[Story], words: int) -> str:
     return "\n\n".join(parts)
 
 
-def build_script(config: Config, now: dt.datetime, use_agy: bool) -> list[tuple[str, str]]:
-    """Return the episode as (voice name, text) segments in reading order."""
+def sources_record(section: Section, stories: list[Story], written_by: str) -> str:
+    """Describe one section for the sources file: who wrote it and every story it was given.
+
+    Stories are numbered as in the agy prompt, with their links, so any line
+    in the episode can be traced back to the feed item it came from.
+    """
+    lines = [f"== {section.name} ==", f"Written by: {written_by}", ""]
+    for number, story in enumerate(stories, 1):
+        when = story.published.strftime("%m/%d/%Y %I:%M %p UTC") if story.published \
+            else "time unknown"
+        lines.append(f"[{number}] {story.source}: {story.title} ({when})")
+        if story.summary:
+            lines.append(f"    {story.summary}")
+        if story.link:
+            lines.append(f"    {story.link}")
+    return "\n".join(lines)
+
+
+def build_script(config: Config, now: dt.datetime,
+                 use_agy: bool) -> tuple[list[tuple[str, str]], str]:
+    """Return the episode as (voice name, text) segments in reading order.
+
+    Also returns the sources file's text: for each section, which model
+    wrote it and the stories it was given.
+    """
     local_now = now.astimezone()
     date_text = f"{local_now:%A, %B} {local_now.day}, {local_now.year}"
     section_words = max(
         150, (config.target_minutes * WORDS_PER_MINUTE - INTRO_OUTRO_WORDS) // len(config.sections))
 
     segments: list[tuple[str, str]] = []
+    records: list[str] = []
     source_counts: dict[str, int] = {}
     total_stories = 0
     for section in config.sections:
@@ -525,14 +558,19 @@ def build_script(config: Config, now: dt.datetime, use_agy: bool) -> list[tuple[
                            f"{config.lookback_hours} hours")
             segments.append(
                 (section.voice, f"{section.name}. Nothing to report today, because {reason}."))
+            records.append(sources_record(section, stories, f"nobody: {reason}"))
             continue
         text = None
+        written_by = "headlines read as published (agy was not used)"
         if use_agy:
             try:
-                text = write_with_agy(section, stories, section_words, date_text, config)
+                text, written_by = write_with_agy(section, stories, section_words, date_text,
+                                                  config)
             except RuntimeError as error:
                 log.error("%s: falling back to headlines: %s", section.name, error)
+                written_by = f"headlines read as published (agy failed: {error})"
         segments.append((section.voice, text or headline_script(section, stories, section_words)))
+        records.append(sources_record(section, stories, written_by))
 
     if total_stories == 0:
         raise RuntimeError("no stories were found in any section; no episode was made")
@@ -543,7 +581,11 @@ def build_script(config: Config, now: dt.datetime, use_agy: bool) -> list[tuple[
     top_sources = sorted(source_counts, key=source_counts.get, reverse=True)[:5]
     outro = (f"That's the briefing. Today's stories came from {len(source_counts)} news "
              f"outlets, including {spoken_list(top_sources)}. More tomorrow.")
-    return [(config.default_voice, intro), *segments, (config.default_voice, outro)]
+    header = (f"Sources for the {local_day:%m/%d/%Y} briefing, made "
+              f"{local_day:%m/%d/%Y %I:%M %p} local time.\n"
+              "Each section lists the stories agy was given, numbered as in its prompt.")
+    sources = "\n\n".join([header, *records])
+    return [(config.default_voice, intro), *segments, (config.default_voice, outro)], sources
 
 
 def synthesize(segments: list[tuple[str, str]], config: Config, workdir: Path) -> Path:
@@ -582,10 +624,24 @@ def synthesize(segments: list[tuple[str, str]], config: Config, workdir: Path) -
     return combined
 
 
-def save_episode(wav: Path, script: str, config: Config, day: dt.date) -> Path:
-    """Encode the MP3 and write it and the script atomically.
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` through a temporary file, with normal permissions."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=f".{path.name}.", delete=False) as handle:
+        handle.write(text + "\n")
+    # NamedTemporaryFile creates files as 0600; give the file the same
+    # permissions as any other new file (normally 0644).
+    umask = os.umask(0)
+    os.umask(umask)
+    os.chmod(handle.name, 0o666 & ~umask)
+    os.replace(handle.name, path)
 
-    Files go in a folder per day: output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3.
+
+def save_episode(wav: Path, script: str, sources: str, config: Config, day: dt.date) -> Path:
+    """Encode the MP3 and write it, the script and the sources list atomically.
+
+    Files go in a folder per day: output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3,
+    with news-YYYY-MM-DD.txt (the script) and news-YYYY-MM-DD.sources.txt.
     """
     day_dir = config.output_dir / day.isoformat()
     day_dir.mkdir(parents=True, exist_ok=True)
@@ -603,15 +659,8 @@ def save_episode(wav: Path, script: str, config: Config, day: dt.date) -> Path:
     if result.returncode != 0:
         tmp_mp3.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()}")
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=day_dir,
-                                     prefix=f".{txt.name}.", delete=False) as handle:
-        handle.write(script + "\n")
-    # NamedTemporaryFile creates files as 0600; give the script the same
-    # permissions as any other new file (normally 0644).
-    umask = os.umask(0)
-    os.umask(umask)
-    os.chmod(handle.name, 0o666 & ~umask)
-    os.replace(handle.name, txt)
+    write_text_atomic(txt, script)
+    write_text_atomic(day_dir / f"news-{day.isoformat()}.sources.txt", sources)
     os.replace(tmp_mp3, mp3)
     return mp3
 
@@ -619,7 +668,7 @@ def save_episode(wav: Path, script: str, config: Config, day: dt.date) -> Path:
 def prune_old(config: Config, today: dt.date) -> None:
     """Delete episodes and scripts older than keep_days.
 
-    Only news-YYYY-MM-DD.mp3/.txt files inside YYYY-MM-DD day folders are
+    Only news-YYYY-MM-DD.mp3/.txt/.sources.txt files inside YYYY-MM-DD day folders are
     removed; a day folder is then removed only if nothing else is left in it.
     """
     if config.keep_days == 0 or not config.output_dir.is_dir():
@@ -659,17 +708,18 @@ def command_run(args: argparse.Namespace) -> int:
         return EXIT_BUSY
 
     now = dt.datetime.now(dt.timezone.utc)
-    segments = build_script(config, now, use_agy=not args.headlines_only)
+    segments, sources = build_script(config, now, use_agy=not args.headlines_only)
     script = "\n\n".join(text for _, text in segments)
     if args.dry_run:
         for voice, text in segments:
             print(f"--- voice: {voice} ---\n{text}\n")
+        print(f"--- sources ---\n{sources}")
         return 0
 
     today = now.astimezone().date()
     with tempfile.TemporaryDirectory(prefix="news-podcast-") as workdir:
         wav = synthesize(segments, config, Path(workdir))
-        mp3 = save_episode(wav, script, config, today)
+        mp3 = save_episode(wav, script, sources, config, today)
     prune_old(config, today)
     log.info("saved %s (%d words)", mp3, len(script.split()))
     return 0
