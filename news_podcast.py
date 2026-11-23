@@ -11,6 +11,7 @@ headlines as published, and says so in the audio.
 
 Commands:
     run      Make today's episode (``--dry-run`` prints the script only).
+    feed     Rebuild the podcast feed (feed.xml) from the saved episodes.
     install  Seed the live config and enable the daily systemd user timer.
 
 Exit codes: 0 success, 1 failure, 2 bad arguments, 75 another run active.
@@ -31,8 +32,11 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import wave
+import xml.etree.ElementTree as ET
+from email.utils import format_datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,6 +47,10 @@ CONFIG_TEMPLATE = REPO_DIR / "config.ini.example"
 CONFIG_PATH = Path.home() / ".config" / "news-podcast" / "config.ini"
 CACHE_DIR = Path.home() / ".cache" / "news-podcast"
 SYSTEMD_TEMPLATE_DIR = REPO_DIR / "systemd"
+COVER_SOURCE = REPO_DIR / "assets" / "news-art-1400.png"
+COVER_NAME = "cover.png"
+FEED_NAME = "feed.xml"
+ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
 UNIT_NAMES = ("news-podcast.service", "news-podcast.timer")
 
@@ -53,7 +61,13 @@ FEED_TIMEOUT_SECONDS = 20
 FEED_ATTEMPTS = 3
 SUMMARY_MAX_CHARS = 600
 USER_AGENT = "news-podcast/1.0 (+https://github.com/bonelifer/news-podcast)"
-EPISODE_NAME = re.compile(r"^news-(\d{4}-\d{2}-\d{2})\.(mp3|txt|sources\.txt)$")
+# Episode files are "YYYY-MM-DD - Title.ext"; older ones are "news-YYYY-MM-DD.ext".
+EPISODE_NAME = re.compile(
+    r"^(?:news-)?(\d{4}-\d{2}-\d{2})(?: - .+)?\.(mp3|txt|sources\.txt)$")
+UNSAFE_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+FALLBACK_TITLE = "News briefing"
+TITLE_MAX_CHARS = 80
+DEFAULT_NETWORK_NAME = "News Podcast Network"
 DAY_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 EXIT_BUSY = 75
 
@@ -143,6 +157,8 @@ class Config:
     agy_command: str
     agy_timeout: int
     agy_models: list[str]  # tried in order; empty uses agy's default model
+    feed_base_url: str  # public address of output_dir; empty turns the feed off
+    network_name: str  # MP3 artist and album, and the feed's title and author
     sections: list[Section] = field(default_factory=list)
 
 
@@ -244,6 +260,9 @@ def load_config(path: Path) -> Config:
     if default_voice not in voices:
         raise ConfigError(f"[piper] default_voice must be one of {', '.join(voices)}, "
                           f"got {default_voice!r}")
+    feed_base_url = parser.get("feed", "base_url", fallback="").strip().rstrip("/")
+    if feed_base_url and not feed_base_url.startswith(("http://", "https://")):
+        raise ConfigError(f"[feed] base_url must be an http(s) URL, got {feed_base_url!r}")
     for section in sections:
         section.voice = section.voice or default_voice
         if section.voice not in voices:
@@ -266,6 +285,9 @@ def load_config(path: Path) -> Config:
         agy_timeout=read_int(parser, "agy", "timeout_seconds", 900, 30),
         agy_models=[m for m in re.split(r"[\s,]+", parser.get("agy", "models", fallback=""))
                     if m],
+        feed_base_url=feed_base_url,
+        network_name=parser.get("podcast", "network_name", fallback="").strip()
+        or DEFAULT_NETWORK_NAME,
         sections=sections,
     )
 
@@ -471,11 +493,11 @@ Stories:
     raise RuntimeError("; ".join(errors))
 
 
-def run_agy(prompt: str, model: str, config: Config) -> str:
+def run_agy(prompt: str, model: str, config: Config, min_words: int = 50) -> str:
     """Run one agy print-mode request with ``model`` ("" for agy's default).
 
-    Returns the cleaned script; raises RuntimeError if agy fails, times out
-    or returns almost nothing.
+    Returns the cleaned text; raises RuntimeError if agy fails, times out
+    or returns fewer than ``min_words`` words.
     """
     workdir = CACHE_DIR / "agy-workspace"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -492,7 +514,7 @@ def run_agy(prompt: str, model: str, config: Config) -> str:
         raise RuntimeError(f"agy exited with {result.returncode}: {detail[0]}")
 
     script = re.sub(r"[*#_`]+", "", result.stdout).strip()
-    if len(script.split()) < 50:
+    if len(script.split()) < min_words:
         raise RuntimeError(f"agy returned only {len(script.split())} words")
     return script
 
@@ -588,6 +610,55 @@ def build_script(config: Config, now: dt.datetime,
     return [(config.default_voice, intro), *segments, (config.default_voice, outro)], sources
 
 
+def clean_title(raw: str) -> str:
+    """Reduce agy's reply to a one-line title that is also safe as a file name.
+
+    Returns "" when nothing usable is left (fewer than two words).
+    """
+    line = next((part for part in raw.splitlines() if part.strip()), "")
+    title = UNSAFE_NAME_CHARS.sub("", line)
+    title = re.sub(r"\s+", " ", title).strip(" \t'\u2018\u2019\u201c\u201d.")
+    if len(title) > TITLE_MAX_CHARS:
+        title = title[:TITLE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(" ,;-")
+    return title if len(title.split()) >= 2 else ""
+
+
+def write_title(script: str, config: Config) -> str:
+    """Ask agy for a short episode title based on the finished script.
+
+    Tries each configured model in turn; falls back to FALLBACK_TITLE if all fail.
+    """
+    prompt = f"""Below is the script of today's spoken news podcast episode. Write a \
+title for the episode.
+
+Rules:
+- 4 to 10 words, in the style of a public radio episode title: plain, specific, \
+sentence case.
+- Name the one or two biggest stories or themes in the script. Use only facts that \
+appear in the script.
+- Never name a president, administration, prime minister, government or other \
+officeholder unless the script itself does.
+- Do not include the date, the words "news" or "briefing" or "podcast", quotation \
+marks, colons, slashes or a final period.
+- Output only the title, on one line, with no preface.
+
+Script:
+{script}
+"""
+    for model in config.agy_models or [""]:
+        try:
+            title = clean_title(run_agy(prompt, model, config, min_words=2))
+        except RuntimeError as error:
+            log.warning("title: agy%s failed: %s", f" model {model}" if model else "", error)
+            continue
+        if title:
+            log.info("title: %s", title)
+            return title
+        log.warning("title: agy%s gave no usable title", f" model {model}" if model else "")
+    log.warning("title: falling back to %r", FALLBACK_TITLE)
+    return FALLBACK_TITLE
+
+
 def synthesize(segments: list[tuple[str, str]], config: Config, workdir: Path) -> Path:
     """Read every segment with Piper and join them into one WAV file."""
     parts: list[Path] = []
@@ -637,38 +708,48 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(handle.name, path)
 
 
-def save_episode(wav: Path, script: str, sources: str, config: Config, day: dt.date) -> Path:
+def save_episode(wav: Path, script: str, sources: str, config: Config, day: dt.date,
+                 title: str) -> Path:
     """Encode the MP3 and write it, the script and the sources list atomically.
 
-    Files go in a folder per day: output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3,
-    with news-YYYY-MM-DD.txt (the script) and news-YYYY-MM-DD.sources.txt.
+    Files go in a folder per day: output_dir/YYYY-MM-DD/YYYY-MM-DD - Title.mp3,
+    with the script as .txt and the sources list as .sources.txt beside it. A
+    day has one episode, so files an earlier run that day left are replaced.
     """
     day_dir = config.output_dir / day.isoformat()
     day_dir.mkdir(parents=True, exist_ok=True)
-    mp3 = day_dir / f"news-{day.isoformat()}.mp3"
-    txt = mp3.with_suffix(".txt")
+    stem = f"{day.isoformat()} - {title}"
+    mp3 = day_dir / f"{stem}.mp3"
     tmp_mp3 = day_dir / f".{mp3.name}.partial"
     result = subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),
          "-codec:a", "libmp3lame", "-q:a", "5", "-f", "mp3",
-         "-metadata", f"title=News briefing {day:%m/%d/%Y}",
-         "-metadata", "artist=news-podcast", "-metadata", "album=Daily news briefing",
+         "-metadata", f"title={title}",
+         "-metadata", f"artist={config.network_name}",
+         "-metadata", f"album={config.network_name}",
+         "-metadata", "genre=Podcast",
          "-metadata", f"date={day.isoformat()}", str(tmp_mp3)],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         tmp_mp3.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()}")
-    write_text_atomic(txt, script)
-    write_text_atomic(day_dir / f"news-{day.isoformat()}.sources.txt", sources)
+    write_text_atomic(day_dir / f"{stem}.txt", script)
+    write_text_atomic(day_dir / f"{stem}.sources.txt", sources)
     os.replace(tmp_mp3, mp3)
+    for path in day_dir.iterdir():
+        match = EPISODE_NAME.match(path.name)
+        if (match and match.group(1) == day.isoformat() and path.is_file()
+                and not path.is_symlink() and not path.name.startswith(f"{stem}.")):
+            path.unlink()
+            log.info("replaced earlier episode file %s", path)
     return mp3
 
 
 def prune_old(config: Config, today: dt.date) -> None:
     """Delete episodes and scripts older than keep_days.
 
-    Only news-YYYY-MM-DD.mp3/.txt/.sources.txt files inside YYYY-MM-DD day folders are
+    Only episode files (see EPISODE_NAME) inside YYYY-MM-DD day folders are
     removed; a day folder is then removed only if nothing else is left in it.
     """
     if config.keep_days == 0 or not config.output_dir.is_dir():
@@ -692,6 +773,83 @@ def prune_old(config: Config, today: dt.date) -> None:
             day_dir.rmdir()
 
 
+def episode_summary(txt: Path) -> str:
+    """Return the first paragraph of an episode's script, or "" if it cannot be read."""
+    try:
+        return txt.read_text(encoding="utf-8").strip().split("\n\n", 1)[0]
+    except OSError:
+        return ""
+
+
+def day_mp3(day_dir: Path) -> Path | None:
+    """Return the newest finished episode MP3 in a day folder, or None."""
+    if not DAY_FOLDER.match(day_dir.name) or not day_dir.is_dir():
+        return None
+    found = [path for path in day_dir.glob("*.mp3") if path.is_file()
+             and (match := EPISODE_NAME.match(path.name)) and match.group(1) == day_dir.name]
+    return max(found, key=lambda path: path.stat().st_mtime, default=None)
+
+
+def feed_item_title(mp3: Path, day: str) -> str:
+    """Return an episode's title: its file name, or a dated default for older files."""
+    prefix = f"{day} - "
+    if mp3.stem.startswith(prefix):
+        return mp3.stem[len(prefix):]
+    return f"News briefing {dt.date.fromisoformat(day):%m/%d/%Y}"
+
+
+def build_feed(config: Config) -> str:
+    """Build a podcast RSS feed of the episodes in output_dir, newest first.
+
+    Only finished MP3s count (``.partial`` files are ignored). Each episode's
+    publish time is its file's modification time.
+    """
+    ET.register_namespace("itunes", ITUNES_NS)
+    base = config.feed_base_url
+    rss = ET.Element("rss", {"version": "2.0"})
+    channel = ET.SubElement(rss, "channel")
+    ET.SubElement(channel, "title").text = config.network_name
+    ET.SubElement(channel, "link").text = base + "/"
+    ET.SubElement(channel, "description").text = (
+        "A spoken news briefing made each morning from RSS feeds.")
+    ET.SubElement(channel, "language").text = "en-us"
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}author").text = config.network_name
+    ET.SubElement(channel, f"{{{ITUNES_NS}}}image",
+                  {"href": f"{base}/{COVER_NAME}"})
+
+    episodes = []
+    for day_dir in config.output_dir.iterdir():
+        mp3 = day_mp3(day_dir)
+        if mp3:
+            episodes.append((day_dir.name, mp3))
+    for day, mp3 in sorted(episodes, reverse=True):
+        stat = mp3.stat()
+        url = f"{base}/{day}/{urllib.parse.quote(mp3.name)}"
+        item = ET.SubElement(channel, "item")
+        ET.SubElement(item, "title").text = feed_item_title(mp3, day)
+        ET.SubElement(item, "description").text = episode_summary(mp3.with_suffix(".txt"))
+        ET.SubElement(item, "pubDate").text = format_datetime(
+            dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).astimezone())
+        ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"news-podcast-{day}"
+        ET.SubElement(item, "enclosure", {"url": url, "length": str(stat.st_size),
+                                          "type": "audio/mpeg"})
+    ET.indent(rss)
+    return ET.tostring(rss, encoding="unicode", xml_declaration=True)
+
+
+def write_feed(config: Config) -> Path:
+    """Write feed.xml and the cover image into output_dir, ready for a web server."""
+    feed = config.output_dir / FEED_NAME
+    write_text_atomic(feed, build_feed(config))
+    if COVER_SOURCE.is_file():
+        partial = config.output_dir / f".{COVER_NAME}.partial"
+        shutil.copyfile(COVER_SOURCE, partial)
+        os.chmod(partial, 0o644)
+        os.replace(partial, config.output_dir / COVER_NAME)
+    log.info("wrote %s", feed)
+    return feed
+
+
 def command_run(args: argparse.Namespace) -> int:
     """Make today's episode, or print its script with --dry-run."""
     config = load_config(args.config)
@@ -710,7 +868,9 @@ def command_run(args: argparse.Namespace) -> int:
     now = dt.datetime.now(dt.timezone.utc)
     segments, sources = build_script(config, now, use_agy=not args.headlines_only)
     script = "\n\n".join(text for _, text in segments)
+    title = FALLBACK_TITLE if args.headlines_only else write_title(script, config)
     if args.dry_run:
+        print(f"--- title ---\n{title}\n")
         for voice, text in segments:
             print(f"--- voice: {voice} ---\n{text}\n")
         print(f"--- sources ---\n{sources}")
@@ -719,9 +879,25 @@ def command_run(args: argparse.Namespace) -> int:
     today = now.astimezone().date()
     with tempfile.TemporaryDirectory(prefix="news-podcast-") as workdir:
         wav = synthesize(segments, config, Path(workdir))
-        mp3 = save_episode(wav, script, sources, config, today)
+        mp3 = save_episode(wav, script, sources, config, today, title)
     prune_old(config, today)
     log.info("saved %s (%d words)", mp3, len(script.split()))
+    if config.feed_base_url:
+        try:
+            write_feed(config)
+        except OSError as error:
+            log.error("episode saved, but the feed could not be written: %s", error)
+    return 0
+
+
+def command_feed(args: argparse.Namespace) -> int:
+    """Rebuild feed.xml from the episodes already in output_dir."""
+    config = load_config(args.config)
+    if not config.feed_base_url:
+        raise ConfigError("[feed] base_url is not set in the config")
+    if not config.output_dir.is_dir():
+        raise ConfigError(f"output folder not found: {config.output_dir}")
+    write_feed(config)
     return 0
 
 
@@ -764,6 +940,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("-H", "--headlines-only", action="store_true",
                      help="skip agy and read the headlines as published")
     run.set_defaults(handler=command_run)
+
+    feed = commands.add_parser(
+        "feed", help="rebuild feed.xml from the saved episodes",
+        description="Write feed.xml and cover.png into the output folder from the "
+                    "episodes already there. Needs [feed] base_url in the config.")
+    feed.add_argument("-c", "--config", type=Path, default=CONFIG_PATH,
+                      help=f"config file to use (default: {CONFIG_PATH})")
+    feed.set_defaults(handler=command_feed)
 
     install = commands.add_parser(
         "install", help="create the config and enable the daily 6 AM timer",

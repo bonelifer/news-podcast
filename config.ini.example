@@ -7,9 +7,14 @@
 
 [podcast]
 # Folder the episodes are saved in. Each day gets its own subfolder:
-# output_dir/YYYY-MM-DD/news-YYYY-MM-DD.mp3, with the script as a .txt and
-# the stories it was written from as a .sources.txt.
+# output_dir/YYYY-MM-DD/YYYY-MM-DD - Title.mp3, where agy writes the title
+# from the finished script, with the script as a .txt and the stories it
+# was written from as a .sources.txt.
 output_dir = ~/Podcasts/news
+
+# Name used as the MP3 artist and album, and as the podcast feed's title and
+# author. Every episode's genre is set to Podcast.
+network_name = News Podcast Network
 
 # Delete episodes older than this many days. 0 keeps every episode.
 keep_days = 30
@@ -23,6 +28,14 @@ lookback_hours = 24
 
 # Most stories taken from any one feed, newest first.
 max_items_per_feed = 15
+
+[feed]
+# Optional podcast feed. When base_url is set, every run (and
+# `news_podcast.py feed`) writes feed.xml and cover.png into output_dir.
+# Serve output_dir with any web server and set base_url to the address that
+# players use to reach it, with no trailing slash, for example
+# http://127.0.0.1:8090. Leave it empty to turn the feed off.
+base_url =
 
 [piper]
 # Voice used for the opening and closing, and for any section that does
