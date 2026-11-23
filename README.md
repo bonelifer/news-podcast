@@ -8,7 +8,8 @@ can use its own voice.
 
 The default setup covers Hot Springs and Arkansas, US and world news, and
 technology. It makes a briefing of about 20 minutes at 6:00 AM each day and
-saves it as `~/Podcasts/news/YYYY-MM-DD/news-YYYY-MM-DD.mp3`, with the script beside it
+saves it as `~/Podcasts/news/YYYY-MM-DD/YYYY-MM-DD - Title.mp3`, where `agy` writes the
+title from the finished script, with the script beside it
 as a `.txt` file and a `.sources.txt` file listing every story `agy` was given (with
 links) and which model wrote each section, so any line can be traced to its feed item.
 
@@ -19,9 +20,14 @@ links) and which model wrote each section, so any line can be traced to its feed
 2. **Write:** sends each section's headlines and feed summaries to
    `agy -p` with instructions to use only those facts. If `agy` fails, that
    section reads the headlines as published instead and says so aloud.
-3. **Record:** Piper reads the opening and closing and each section with its
+3. **Title:** `agy` reads the finished script and writes a short episode title,
+   used in the MP3 tags and the file names. If `agy` fails, the title is
+   "News briefing".
+4. **Record:** Piper reads the opening and closing and each section with its
    chosen voice, and the parts are joined and encoded to MP3 with `ffmpeg`.
-4. **Tidy:** deletes episodes older than 30 days.
+   The MP3's artist and album are the `network_name` setting and its genre
+   is Podcast.
+5. **Tidy:** deletes episodes older than 30 days.
 
 `agy` only sees what the feeds provide (headline plus a short summary). It
 does not read full articles.
@@ -74,12 +80,28 @@ If the computer is off at 6:00 AM, the timer runs once at the next boot.
 The timer only runs while you are logged in, unless you enable lingering
 with `loginctl enable-linger`.
 
+## Podcast feed
+
+To play episodes in a podcast player (or the myMPD Podcasts picker), serve the
+output folder with a web server such as nginx and set `base_url` in the
+`[feed]` block of the config to the address it is served at. The feed's title
+and author are the `network_name` setting. Each run then
+writes `feed.xml` and `cover.png` into the output folder beside the day
+folders. To build the feed from episodes that already exist, run:
+
+```bash
+./news_podcast.py feed
+```
+
+The web server only needs to serve files, and should support HTTP range
+requests so players can seek. nginx does by default.
+
 ## Configuration
 
 Everything lives in `~/.config/news-podcast/config.ini`; the comments in
 [`config.ini.example`](config.ini.example) explain each setting. In short:
 
-- `[podcast]`: output folder, days to keep, target length, lookback window
+- `[podcast]`: output folder, network name, days to keep, target length, lookback window
 - `[voice: Name]`: Piper voice models (all must share one sample rate)
 - `[section: Name]`: the episode's segments, in order, each with a `voice`
   and a list of feed URLs (`URL | Spoken name` sets the outlet name read
@@ -92,7 +114,7 @@ Everything lives in `~/.config/news-podcast/config.ini`; the comments in
   `[pronunciations: Voice]` block overrides it for one voice
 
 Every episode uses some of your Antigravity usage allowance: one `agy`
-request per section. Check what is left with `agy -p /usage`.
+request per section, plus one for the title. Check what is left with `agy -p /usage`.
 
 ## Contributing
 
