@@ -68,6 +68,7 @@ UNSAFE_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 FALLBACK_TITLE = "News briefing"
 TITLE_MAX_CHARS = 80
 DEFAULT_NETWORK_NAME = "News Podcast Network"
+ALBUM_NAME = "Daily Briefing"
 DAY_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 EXIT_BUSY = 75
 
@@ -158,7 +159,7 @@ class Config:
     agy_timeout: int
     agy_models: list[str]  # tried in order; empty uses agy's default model
     feed_base_url: str  # public address of output_dir; empty turns the feed off
-    network_name: str  # MP3 artist and album, and the feed's title and author
+    network_name: str  # MP3 artist, and the feed's title and author
     sections: list[Section] = field(default_factory=list)
 
 
@@ -726,7 +727,7 @@ def save_episode(wav: Path, script: str, sources: str, config: Config, day: dt.d
          "-codec:a", "libmp3lame", "-q:a", "5", "-f", "mp3",
          "-metadata", f"title={title}",
          "-metadata", f"artist={config.network_name}",
-         "-metadata", f"album={config.network_name}",
+         "-metadata", f"album={ALBUM_NAME}",
          "-metadata", "genre=Podcast",
          "-metadata", f"date={day.isoformat()}", str(tmp_mp3)],
         capture_output=True, text=True,

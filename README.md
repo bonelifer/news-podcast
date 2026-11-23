@@ -25,8 +25,8 @@ links) and which model wrote each section, so any line can be traced to its feed
    "News briefing".
 4. **Record:** Piper reads the opening and closing and each section with its
    chosen voice, and the parts are joined and encoded to MP3 with `ffmpeg`.
-   The MP3's artist and album are the `network_name` setting and its genre
-   is Podcast.
+   The MP3's artist is the `network_name` setting, its album is Daily Briefing
+   and its genre is Podcast.
 5. **Tidy:** deletes episodes older than 30 days.
 
 `agy` only sees what the feeds provide (headline plus a short summary). It
