@@ -12,8 +12,8 @@
 # was written from as a .sources.txt.
 output_dir = ~/Podcasts/news
 
-# Name used as the MP3 artist and album, and as the podcast feed's title and
-# author. Every episode's genre is set to Podcast.
+# Name used as the MP3 artist, and as the podcast feed's title and author.
+# Every episode's album is Daily Briefing and its genre is Podcast.
 network_name = News Podcast Network
 
 # Delete episodes older than this many days. 0 keeps every episode.
